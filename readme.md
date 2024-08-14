@@ -1,4 +1,4 @@
-# GPU Monitor
+# GPU Monitoring
 
 This Python script monitors GPU usage and logs the data, with optional Telegram notifications and Notion integration.
 
