@@ -104,6 +104,9 @@ def get_gpu_usage():
     except subprocess.CalledProcessError as e:
         log_error(f"Fehler bei der Ausführung von nvidia-smi: {e.stderr.decode('utf-8')}")
         return None
+    except Exception as e:
+        log_error(f"Unerwarteter Fehler beim Abrufen der GPU-Nutzung: {str(e)}")
+        return None
 
 def get_system_info():
     try:
@@ -364,126 +367,121 @@ icon = pystray.Icon("GPU Monitor", create_image(), "GPU Monitor", create_menu())
 def main(autostart=False):
     global should_stop, last_log_time, gpu_usage_start, cool_down_start, logging_active, icon, filtered_total, CONFIG, bot
     
-    if is_script_running():
-        print("Eine Instanz des Skripts läuft bereits. Beende diesen Prozess.")
-        logging.info("Versuch, eine zweite Instanz zu starten. Beende den Prozess.")
-        sys.exit(0)
-
-    # Load configuration
-    CONFIG = load_config()
-
-    # Calculate filtered_total after CONFIG is loaded
-    filtered_total = calculate_filtered_total()
-
-    # Initialize bot only if Telegram is enabled
-    if CONFIG.get('ENABLE_TELEGRAM', False):
-        initialize_bot()
-
-    # LOG_DIR als Path-Objekt erstellen
-    CONFIG['LOG_DIR'] = Path(CONFIG['LOG_DIR'])
-
-    # Erstellen Sie das Log-Verzeichnis, falls es nicht existiert
-    CONFIG['LOG_DIR'].mkdir(parents=True, exist_ok=True)
-
-    # Konfigurieren Sie das Logging
-    log_file = CONFIG['LOG_DIR'] / 'gpu_monitor.log'
-    logging.basicConfig(
-        handlers=[RotatingFileHandler(log_file, maxBytes=100000, backupCount=5)],
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s'
-    )
-
-    # Fügen Sie hier eine kurze Verzögerung ein
-    time.sleep(2)
-
-    # Schreiben Sie die PID in eine Datei, nur wenn nicht im Autostart-Modus
-    if not autostart:
-        try:
-            with open('gpu_monitor.pid', 'w') as f:
-                f.write(str(os.getpid()))
-        except PermissionError:
-            logging.warning("Konnte PID-Datei nicht erstellen. Fahre trotzdem fort.")
-
-    logging.info("GPU-Überwachung gestartet")
-    if CONFIG.get('ENABLE_TELEGRAM', False):
-        send_telegram_message("🚀 *GPU-Überwachung gestartet*")
-
-    # Starte das Tray-Icon in einem separaten Thread
-    icon_thread = threading.Thread(target=icon.run, args=(setup,))
-    icon_thread.start()
-
-    # Starte den Thread zur Aktualisierung des Icon-Texts
-    update_thread = threading.Thread(target=update_icon_text)
-    update_thread.daemon = True  # Setze den Thread als Daemon
-    update_thread.start()
-
-    # Starte den Telegram-Bot in einem separaten Thread nur wenn Telegram aktiviert ist
-    if CONFIG.get('ENABLE_TELEGRAM', False):
-        bot_thread = threading.Thread(target=bot.polling, daemon=True)
-        bot_thread.start()
-
     try:
+        if is_script_running():
+            print("Eine Instanz des Skripts läuft bereits. Beende diesen Prozess.")
+            logging.info("Versuch, eine zweite Instanz zu starten. Beende den Prozess.")
+            sys.exit(0)
+
+        CONFIG = load_config()
+        filtered_total = calculate_filtered_total()
+
+        if CONFIG.get('ENABLE_TELEGRAM', False):
+            initialize_bot()
+
+        CONFIG['LOG_DIR'] = Path(CONFIG['LOG_DIR'])
+        CONFIG['LOG_DIR'].mkdir(parents=True, exist_ok=True)
+
+        log_file = CONFIG['LOG_DIR'] / 'gpu_monitor.log'
+        logging.basicConfig(
+            handlers=[RotatingFileHandler(log_file, maxBytes=100000, backupCount=5)],
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s'
+        )
+
+        time.sleep(2)
+
+        if not autostart:
+            try:
+                with open('gpu_monitor.pid', 'w') as f:
+                    f.write(str(os.getpid()))
+            except PermissionError:
+                logging.warning("Konnte PID-Datei nicht erstellen. Fahre trotzdem fort.")
+
+        logging.info("GPU-Überwachung gestartet")
+        if CONFIG.get('ENABLE_TELEGRAM', False):
+            try:
+                send_telegram_message("🚀 *GPU-Überwachung gestartet*")
+            except Exception as e:
+                logging.error(f"Fehler beim Senden der Startnachricht: {str(e)}")
+
+        icon_thread = threading.Thread(target=icon.run, args=(setup,))
+        icon_thread.start()
+
+        update_thread = threading.Thread(target=update_icon_text)
+        update_thread.daemon = True
+        update_thread.start()
+
+        if CONFIG.get('ENABLE_TELEGRAM', False):
+            bot_thread = threading.Thread(target=bot.polling, daemon=True)
+            bot_thread.start()
+
         while not should_stop:
-            if check_stop_file():
-                should_stop = True
-                break
+            try:
+                if check_stop_file():
+                    should_stop = True
+                    break
 
-            current_time = datetime.now()
-            current_date = current_time.strftime("%Y-%m-%d")
-            
-            gpu_usage = get_gpu_usage()
-            
-            if gpu_usage is None:
-                continue
-            
-            # Regelmäßiges Logging
-            if (current_time - last_log_time).total_seconds() >= CONFIG['LOG_INTERVAL']:
-                system_info = get_system_info()
-                if system_info:
-                    log_regular_info(current_time, gpu_usage, system_info)
-                    last_log_time = current_time
-            
-            # GPU-Nutzungs-Logging
-            if gpu_usage > CONFIG['GPU_USAGE_THRESHOLD']:
-                if gpu_usage_start is None:
-                    gpu_usage_start = current_time
-                    if CONFIG.get('ENABLE_TELEGRAM', False):
-                        send_telegram_message(f"🔥 *GPU-Nutzung über Schwellenwert*\nAktuell: *{gpu_usage}%*")
-                    logging_active = True
-                    icon.icon = create_image(active=True)  # Update icon when logging starts
-                cool_down_start = None
-            elif gpu_usage_start is not None:
-                if cool_down_start is None:
-                    cool_down_start = current_time
-                elif (current_time - cool_down_start).total_seconds() >= CONFIG['COOL_DOWN_PERIOD']:
-                    duration = (cool_down_start - gpu_usage_start).total_seconds()
-                    log_gpu_usage(gpu_usage_start, cool_down_start, duration)
-                    if CONFIG.get('ENABLE_NOTION', False):
-                        update_notion(gpu_usage_start, cool_down_start, duration)
-                    gpu_usage_start = None
+                current_time = datetime.now()
+                
+                gpu_usage = get_gpu_usage()
+                if gpu_usage is None:
+                    time.sleep(CONFIG['CHECK_INTERVAL'])
+                    continue
+                
+                if (current_time - last_log_time).total_seconds() >= CONFIG['LOG_INTERVAL']:
+                    system_info = get_system_info()
+                    if system_info:
+                        try:
+                            log_regular_info(current_time, gpu_usage, system_info)
+                            last_log_time = current_time
+                        except Exception as e:
+                            log_error(f"Fehler beim Loggen der regulären Info: {str(e)}")
+                
+                if gpu_usage > CONFIG['GPU_USAGE_THRESHOLD']:
+                    if gpu_usage_start is None:
+                        gpu_usage_start = current_time
+                        if CONFIG.get('ENABLE_TELEGRAM', False):
+                            send_telegram_message(f"🔥 *GPU-Nutzung über Schwellenwert*\nAktuell: *{gpu_usage}%*")
+                        logging_active = True
+                        icon.icon = create_image(active=True)
                     cool_down_start = None
-                    logging_active = False
-                    icon.icon = create_image(active=False)  # Update icon when logging stops
-            
-            # Speichere die aktuellen Werte regelmäßig
-            save_config()
+                elif gpu_usage_start is not None:
+                    if cool_down_start is None:
+                        cool_down_start = current_time
+                    elif (current_time - cool_down_start).total_seconds() >= CONFIG['COOL_DOWN_PERIOD']:
+                        duration = (cool_down_start - gpu_usage_start).total_seconds()
+                        log_gpu_usage(gpu_usage_start, cool_down_start, duration)
+                        if CONFIG.get('ENABLE_NOTION', False):
+                            update_notion(gpu_usage_start, cool_down_start, duration)
+                        gpu_usage_start = None
+                        cool_down_start = None
+                        logging_active = False
+                        icon.icon = create_image(active=False)
+                
+                try:
+                    save_config()
+                except Exception as e:
+                    log_error(f"Fehler beim Speichern der Konfiguration: {str(e)}")
 
-            time.sleep(CONFIG['CHECK_INTERVAL'])
+                time.sleep(CONFIG['CHECK_INTERVAL'])
+
+            except Exception as e:
+                log_error(f"Unerwarteter Fehler in der Hauptschleife: {str(e)}")
+                time.sleep(60)  # Warte eine Minute vor dem nächsten Versuch
 
     except Exception as e:
-        error_msg = f"Unerwarteter Fehler im Hauptprogramm: {str(e)}\n{traceback.format_exc()}"
-        log_error(error_msg)
-        time.sleep(60)  # Warte eine Minute vor dem nächsten Versuch
-
-    except Exception as e:
-        error_msg = f"Unerwarteter Fehler im Hauptprogramm: {str(e)}"
+        error_msg = f"Kritischer Fehler in der Hauptfunktion: {str(e)}"
         logging.exception(error_msg)
-        send_telegram_message(f"❌ *Fehler*: {error_msg}")
+        if CONFIG.get('ENABLE_TELEGRAM', False):
+            try:
+                send_telegram_message(f"❌ *Kritischer Fehler*: {error_msg}")
+            except Exception as telegram_error:
+                logging.error(f"Fehler beim Senden der kritischen Fehlermeldung: {str(telegram_error)}")
     finally:
         should_stop = True
         icon.stop()
         icon_thread.join()
-        # Wir müssen update_thread nicht mehr explizit beenden, da er ein Daemon-Thread ist
         logging.info("GPU-Überwachung beendet")
         if CONFIG.get('ENABLE_TELEGRAM', False):
             send_telegram_message("🛑 *GPU-Überwachung wurde beendet*")
@@ -493,7 +491,6 @@ if __name__ == "__main__":
     parser.add_argument('--autostart', action='store_true', help='Startet im Autostart-Modus ohne PID-Datei zu erstellen')
     args = parser.parse_args()
 
-    # Registrieren Sie die Signalhandler
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
     
@@ -501,13 +498,14 @@ if __name__ == "__main__":
         main(args.autostart)
     except Exception as e:
         logging.exception("Kritischer Fehler: Bot konnte nicht gestartet werden")
-        if bot:
-            send_telegram_message(f"❌ *Kritischer Fehler*: Bot konnte nicht gestartet werden\nGrund: {str(e)}")
+        if CONFIG and CONFIG.get('ENABLE_TELEGRAM', False):
+            try:
+                send_telegram_message(f"❌ *Kritischer Fehler*: Bot konnte nicht gestartet werden\nGrund: {str(e)}")
+            except Exception as telegram_error:
+                logging.error(f"Fehler beim Senden der Fehlermeldung über Telegram: {str(telegram_error)}")
     finally:
-        # Beende den Bot-Thread sauber
         if bot:
             bot.stop_polling()
-        # Entferne die PID-Datei, nur wenn sie existiert und wir nicht im Autostart-Modus sind
         if not args.autostart:
             try:
                 os.remove('gpu_monitor.pid')
