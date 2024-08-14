@@ -10,17 +10,19 @@ It is based on NVIDIA's `nvidia-smi` command, which is a command-line utility to
 
 2. Ensure you have Python 3.7+ installed. You can download it from [python.org](https://www.python.org/downloads/).
 
-3. Install the required packages:
+3. Navigate in the downloaded folder with `cd gpu-monitoring`
+
+4. Install the required packages:
 
    ```
    pip install --user -r requirements.txt
    ```
 
-4. Adjust the `config.json` file in the same directory as `monitor.py` with your desired settings (see Configuration section below).
+5. Adjust the `config.json` file in the same directory as `monitor.py` with your desired settings (see Configuration section below).
 
-5. Test the script by double-clicking the `start.bat` file. To stop, use the `stop.bat` file.
+6. Test the script by double-clicking the `start.bat` file. To stop, use the `stop.bat` file.
 
-6. If you want the script to start automatically at system startup:
+7. If you want the script to start automatically at system startup:
    - Edit the `autostartMonitoring.bat` file and adjust the path to your `monitor.py` file.
    - Press `Win + R`, type `shell:startup`, and press Enter.
    - Copy the edited `autostartMonitoring.bat` file to this startup folder.
