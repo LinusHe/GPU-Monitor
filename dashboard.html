@@ -1,0 +1,621 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GPU Usage Dashboard</title>
+    <link
+      href="https://fonts.googleapis.com/icon?family=Material+Icons"
+      rel="stylesheet"
+    />
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/materialize/1.0.0/css/materialize.min.css"
+    />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.0/papaparse.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+    <style>
+      .container {
+        max-width: 1200px;
+        margin: 0 auto;
+      }
+      #content {
+        display: none;
+      }
+      .chart-container {
+        position: relative;
+        height: 50vh;
+        width: 100%;
+      }
+      .summary {
+        font-weight: bold;
+      }
+      .collapsible-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+      .collapsible-body {
+        padding: 10px;
+      }
+      .collapsible-body table {
+        margin: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <nav class="blue darken-3">
+      <div class="nav-wrapper container">
+        <a href="#" class="brand-logo">GPU Usage Dashboard</a>
+      </div>
+    </nav>
+
+    <div class="container">
+      <div class="section">
+        <button id="loadDataButton" class="btn waves-effect waves-light">
+          <i class="material-icons left">folder_open</i>Select Data Folder
+        </button>
+      </div>
+
+      <div id="content">
+        <ul class="tabs">
+          <li class="tab"><a href="#table">Table</a></li>
+          <li class="tab"><a href="#gpuUsageChart">GPU Usage Chart</a></li>
+          <li class="tab"><a href="#regularLogChart">Regular Log Chart</a></li>
+        </ul>
+
+        <div id="table" class="col s12">
+          <h5>GPU Usage Table</h5>
+          <ul id="tableBody" class="collapsible">
+            <!-- Accordion items will be inserted here -->
+          </ul>
+          <table class="striped">
+            <tfoot>
+              <tr class="summary">
+                <td>Total</td>
+                <td id="totalDuration"></td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+
+        <div id="gpuUsageChart" class="col s12">
+          <h5>GPU Usage Chart</h5>
+          <div class="chart-container">
+            <canvas id="gpuUsageChartCanvas"></canvas>
+          </div>
+        </div>
+
+        <div id="regularLogChart" class="col s12">
+          <h5>Regular Log Chart</h5>
+          <div class="input-field">
+            <select id="regularLogDate"></select>
+            <label>Select Date</label>
+          </div>
+          <div class="chart-container">
+            <canvas id="regularLogChartCanvas"></canvas>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/materialize/1.0.0/js/materialize.min.js"></script>
+    <script>
+      let gpuUsageData = [];
+      let regularLogData = [];
+      let gpuUsageChart, regularLogChart;
+      let lastResetDate = null; // Declare lastResetDate as a global variable
+
+      document.addEventListener("DOMContentLoaded", function () {
+        const tabs = M.Tabs.init(document.querySelectorAll(".tabs"), {
+          onShow: function (tab) {
+            if (tab.id === "gpuUsageChart" && !gpuUsageChart) {
+              createGPUUsageChart();
+            } else if (tab.id === "regularLogChart" && !regularLogChart) {
+              updateRegularLogChart();
+            }
+          },
+        });
+        M.FormSelect.init(document.querySelectorAll("select"));
+      });
+
+      function log(message) {
+        console.log(message);
+      }
+
+      function parseCSV(file) {
+        return new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = function (event) {
+            const csv = event.target.result;
+            Papa.parse(csv, {
+              header: true,
+              dynamicTyping: false, // Keep everything as strings
+              complete: function (results) {
+                console.log(
+                  `Parsed ${results.data.length} rows from ${file.name}`
+                );
+                resolve(results.data);
+              },
+              error: function (error) {
+                console.error(`Error parsing ${file.name}:`, error);
+                reject(error);
+              },
+            });
+          };
+          reader.onerror = function (error) {
+            console.error(`Error reading ${file.name}:`, error);
+            reject(error);
+          };
+          reader.readAsText(file);
+        });
+      }
+
+      async function loadSettings() {
+        try {
+          const response = await fetch("settings.json");
+          const settings = await response.json();
+          return new Date(settings.last_reset_date);
+        } catch (error) {
+          console.error("Error loading settings:", error);
+          return null;
+        }
+      }
+
+      async function loadData() {
+        try {
+          console.log("Starting to load data...");
+          const dirHandle = await window.showDirectoryPicker();
+
+          lastResetDate = null; // Reset the lastResetDate
+          gpuUsageData = [];
+          regularLogData = [];
+
+          console.log("Directory selected, starting to read files...");
+          for await (const entry of dirHandle.values()) {
+            if (entry.kind === "file") {
+              if (entry.name === "settings.json") {
+                try {
+                  const file = await entry.getFile();
+                  const content = await file.text();
+                  const settings = JSON.parse(content);
+                  lastResetDate = new Date(settings.last_reset_date);
+                  console.log("Last reset date loaded:", lastResetDate);
+                } catch (error) {
+                  console.error("Error loading settings.json:", error);
+                }
+              } else if (entry.name.endsWith(".csv")) {
+                console.log(`Processing file: ${entry.name}`);
+                try {
+                  const file = await entry.getFile();
+                  const data = await parseCSV(file);
+
+                  const filteredData = lastResetDate
+                    ? data.filter(
+                        (row) =>
+                          new Date(row["Start Time"] || row["Timestamp"]) >
+                          lastResetDate
+                      )
+                    : data;
+
+                  if (entry.name.startsWith("gpu_usage_log")) {
+                    gpuUsageData = gpuUsageData.concat(filteredData);
+                    console.log(
+                      `Added ${filteredData.length} rows to gpuUsageData`
+                    );
+                  } else if (entry.name.startsWith("regular_log")) {
+                    regularLogData = regularLogData.concat(filteredData);
+                    console.log(
+                      `Added ${filteredData.length} rows to regularLogData`
+                    );
+                  }
+                } catch (error) {
+                  console.error(`Error processing ${entry.name}:`, error);
+                  continue;
+                }
+              }
+            }
+          }
+
+          console.log("Data loaded successfully");
+          console.log(`GPU usage data entries: ${gpuUsageData.length}`);
+          console.log(`Regular log data entries: ${regularLogData.length}`);
+
+          if (gpuUsageData.length > 0 || regularLogData.length > 0) {
+            document.getElementById("content").style.display = "block";
+            updateDashboard();
+          } else {
+            throw new Error("No valid data loaded");
+          }
+        } catch (error) {
+          console.error("Error loading data:", error);
+          M.toast({ html: "Error loading data. Please try again." });
+        }
+      }
+
+      function updateDashboard() {
+        updateTable();
+        updateRegularLogChart();
+        // We'll create charts when their tabs are activated
+        document.querySelector(".tabs").M_Tabs.select("table");
+      }
+
+      function formatDuration(seconds) {
+        console.log("Formatting duration:", seconds);
+        if (typeof seconds !== "number" || isNaN(seconds)) {
+          console.warn("Invalid duration:", seconds);
+          return "N/A";
+        }
+        const hours = Math.floor(seconds / 3600);
+        const minutes = Math.floor((seconds % 3600) / 60);
+        const remainingSeconds = Math.round(seconds % 60);
+        const parts = [];
+        if (hours > 0) parts.push(`${hours} hour${hours !== 1 ? "s" : ""}`);
+        if (minutes > 0)
+          parts.push(`${minutes} minute${minutes !== 1 ? "s" : ""}`);
+        if (remainingSeconds > 0 || parts.length === 0)
+          parts.push(
+            `${remainingSeconds} second${remainingSeconds !== 1 ? "s" : ""}`
+          );
+        return parts.join(", ");
+      }
+
+      function updateTable() {
+        const tableBody = document.getElementById("tableBody");
+        let totalDuration = 0;
+        const groupedData = {};
+
+        // Group data by date, considering lastResetDate
+        gpuUsageData.forEach((row) => {
+          const startTime = new Date(row["Start Time"]);
+          if (
+            isNaN(startTime.getTime()) ||
+            (lastResetDate && startTime <= lastResetDate)
+          )
+            return; // Skip invalid dates or dates before/on lastResetDate
+          const dateKey = startTime.toLocaleDateString();
+          if (!groupedData[dateKey]) {
+            groupedData[dateKey] = { rows: [], totalDuration: 0 };
+          }
+          const duration = parseFloat(row["Duration (seconds)"]);
+          if (!isNaN(duration)) {
+            groupedData[dateKey].rows.push(row);
+            groupedData[dateKey].totalDuration += duration;
+            totalDuration += duration;
+          }
+        });
+
+        tableBody.innerHTML = "";
+        Object.entries(groupedData).forEach(([date, data], index) => {
+          const accordionItem = document.createElement("li");
+
+          const header = document.createElement("div");
+          header.className = "collapsible-header";
+          header.innerHTML = `
+            <span>${date}</span>
+            <span>${formatDuration(data.totalDuration)}</span>
+          `;
+
+          const body = document.createElement("div");
+          body.className = "collapsible-body";
+
+          const contentTable = document.createElement("table");
+          contentTable.className = "striped";
+          contentTable.innerHTML = `
+            <thead>
+              <tr>
+                <th>Start</th>
+                <th>End</th>
+                <th>Duration</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${data.rows
+                .map(
+                  (row) => `
+                <tr>
+                  <td>${formatDateTime(new Date(row["Start Time"]))}</td>
+                  <td>${formatDateTime(new Date(row["End Time"]))}</td>
+                  <td>${formatDuration(
+                    parseFloat(row["Duration (seconds)"])
+                  )}</td>
+                </tr>
+              `
+                )
+                .join("")}
+            </tbody>
+          `;
+          body.appendChild(contentTable);
+
+          accordionItem.appendChild(header);
+          accordionItem.appendChild(body);
+          tableBody.appendChild(accordionItem);
+        });
+
+        document.getElementById("totalDuration").textContent =
+          formatDuration(totalDuration);
+
+        // Initialize the collapsible (accordion) after adding all items
+        M.Collapsible.init(tableBody, { accordion: true });
+      }
+
+      function formatDateTime(date) {
+        return `${date.toLocaleDateString()} ${date.toLocaleTimeString([], {
+          hour: "2-digit",
+          minute: "2-digit",
+        })}`;
+      }
+
+      function createGPUUsageChart() {
+        console.log("Starting to create GPU Usage Chart...");
+        const ctx = document
+          .getElementById("gpuUsageChartCanvas")
+          .getContext("2d");
+
+        if (gpuUsageChart) {
+          gpuUsageChart.destroy();
+        }
+
+        // Sort data by start time
+        gpuUsageData.sort(
+          (a, b) => new Date(a["Start Time"]) - new Date(b["Start Time"])
+        );
+
+        // Calculate cumulative duration by day
+        let cumulativeDuration = 0;
+        const chartData = [];
+        let currentDate = null;
+
+        gpuUsageData.forEach((row) => {
+          const startTime = new Date(row["Start Time"]);
+          if (lastResetDate && startTime <= lastResetDate) return; // Skip data before or on lastResetDate
+          const duration = parseFloat(row["Duration (seconds)"]);
+
+          if (!isNaN(duration)) {
+            cumulativeDuration += duration;
+
+            const dateStr = startTime.toISOString().split("T")[0]; // Get date in YYYY-MM-DD format
+
+            if (dateStr !== currentDate) {
+              chartData.push({
+                x: dateStr,
+                y: cumulativeDuration / 3600, // Convert to hours
+              });
+              currentDate = dateStr;
+            } else {
+              // Update the last point if it's the same day
+              chartData[chartData.length - 1].y = cumulativeDuration / 3600;
+            }
+          }
+        });
+
+        console.log(`Created chart data with ${chartData.length} points`);
+
+        gpuUsageChart = new Chart(ctx, {
+          type: "line",
+          data: {
+            datasets: [
+              {
+                label: "Cumulative GPU Usage Duration",
+                data: chartData,
+                borderColor: "rgb(75, 192, 192)",
+                tension: 0.1,
+              },
+            ],
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+              x: {
+                type: "time",
+                time: {
+                  unit: "day",
+                  displayFormats: {
+                    day: "MMM d",
+                  },
+                },
+                title: {
+                  display: true,
+                  text: "Date",
+                },
+              },
+              y: {
+                beginAtZero: true,
+                title: {
+                  display: true,
+                  text: "Cumulative Duration (hours)",
+                },
+              },
+            },
+            plugins: {
+              tooltip: {
+                callbacks: {
+                  title: function (context) {
+                    return new Date(context[0].parsed.x).toLocaleDateString();
+                  },
+                  label: function (context) {
+                    return `Cumulative Duration: ${formatDuration(
+                      context.parsed.y * 3600
+                    )}`;
+                  },
+                },
+              },
+            },
+          },
+        });
+      }
+
+      function updateRegularLogChart() {
+        const dates = [
+          ...new Set(
+            regularLogData
+              .map((row) => {
+                const date = new Date(row["Timestamp"]);
+                if (
+                  isNaN(date.getTime()) ||
+                  (lastResetDate && date <= lastResetDate)
+                ) {
+                  return null;
+                }
+                return date.toLocaleDateString();
+              })
+              .filter((date) => date !== null)
+          ),
+        ].sort((a, b) => new Date(a) - new Date(b)); // Sort dates in ascending order
+
+        const select = document.getElementById("regularLogDate");
+        select.innerHTML = dates
+          .map((date) => `<option value="${date}">${date}</option>`)
+          .join("");
+        M.FormSelect.init(select);
+
+        select.onchange = () => createRegularLogChart(select.value);
+        if (dates.length > 0) {
+          createRegularLogChart(dates[0]);
+        } else {
+          // Clear the chart if no valid dates are available
+          if (regularLogChart) {
+            regularLogChart.destroy();
+            regularLogChart = null;
+          }
+          const ctx = document
+            .getElementById("regularLogChartCanvas")
+            .getContext("2d");
+          ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+          ctx.font = "20px Arial";
+          ctx.fillText("No data available after the last reset date", 10, 50);
+        }
+      }
+
+      function createRegularLogChart(date) {
+        const ctx = document
+          .getElementById("regularLogChartCanvas")
+          .getContext("2d");
+        const filteredData = regularLogData.filter((row) => {
+          const timestamp = new Date(row["Timestamp"]);
+          return (
+            timestamp.toLocaleDateString() === date &&
+            (!lastResetDate || timestamp > lastResetDate)
+          );
+        });
+
+        if (regularLogChart) {
+          regularLogChart.destroy();
+        }
+
+        const chartData = {
+          labels: filteredData.map((row) =>
+            new Date(row["Timestamp"]).toLocaleTimeString([], {
+              hour: "2-digit",
+              minute: "2-digit",
+            })
+          ),
+          datasets: ["GPU Usage", "CPU Usage", "RAM Usage"].map((metric) => ({
+            label: metric,
+            data: filteredData.map((row) => {
+              const value = parseFloat(row[metric]);
+              return isNaN(value) ? null : value;
+            }),
+            borderColor: getColorForMetric(metric),
+            tension: 0.1,
+          })),
+        };
+
+        regularLogChart = new Chart(ctx, {
+          type: "line",
+          data: chartData,
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+              y: {
+                beginAtZero: true,
+                title: {
+                  display: true,
+                  text: "Usage (%)",
+                },
+              },
+            },
+            plugins: {
+              tooltip: {
+                callbacks: {
+                  title: function (tooltipItems) {
+                    return new Date(
+                      filteredData[tooltipItems[0].dataIndex]["Timestamp"]
+                    ).toLocaleString();
+                  },
+                  label: function (context) {
+                    const label = context.dataset.label || "";
+                    const value = context.parsed.y;
+                    return `${label}: ${value.toFixed(2)}%`;
+                  },
+                  afterBody: function (tooltipItems) {
+                    const dataIndex = tooltipItems[0].dataIndex;
+                    const rowData = filteredData[dataIndex];
+                    return createTooltipContent(rowData);
+                  },
+                },
+              },
+            },
+          },
+        });
+      }
+
+      function getColorForMetric(metric) {
+        switch (metric) {
+          case "GPU Usage":
+            return "rgb(255, 99, 132)";
+          case "CPU Usage":
+            return "rgb(54, 162, 235)";
+          case "RAM Usage":
+            return "rgb(255, 206, 86)";
+          default:
+            return "rgb(75, 192, 192)";
+        }
+      }
+
+      function createTooltipContent(rowData) {
+        let content = [];
+
+        // Disk Usage
+        content.push("Disk Usage:");
+        const diskUsageStr = rowData["Disk Usage"]
+          .replace(/^"|"$/g, "")
+          .replace(/\\/g, "");
+        try {
+          // Parse the disk usage string as an object
+          const diskUsage = eval(`(${diskUsageStr})`);
+          for (const [drive, usage] of Object.entries(diskUsage)) {
+            content.push(`${drive}: ${usage}%`);
+          }
+        } catch (error) {
+          console.error("Error parsing Disk Usage:", error);
+          content.push(`Raw Disk Usage: ${diskUsageStr}`);
+        }
+
+        // Top Processes (unchanged)
+        content.push("", "Top Processes:");
+        const topProcessesStr = rowData["Top Processes"]
+          .replace(/^"|"$/g, "")
+          .replace(/\\"/g, '"');
+        try {
+          const topProcesses = JSON.parse(topProcessesStr);
+          topProcesses.forEach((process) => {
+            content.push(`${process.name}: ${process.cpu_percent.toFixed(1)}%`);
+          });
+        } catch (error) {
+          console.error("Error parsing Top Processes:", error);
+          content.push(`Raw Top Processes: ${topProcessesStr}`);
+        }
+
+        return content.join("\n");
+      }
+
+      document
+        .getElementById("loadDataButton")
+        .addEventListener("click", loadData);
+    </script>
+  </body>
+</html>

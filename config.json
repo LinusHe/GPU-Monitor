@@ -1,0 +1,15 @@
+{
+    "GPU_USAGE_THRESHOLD": 30,
+    "CHECK_INTERVAL": 5,
+    "LOG_INTERVAL": 600,
+    "COOL_DOWN_PERIOD": 10,
+    "LOG_DIR": "C:\\Users\\your_username\\OneDrive\\Desktop\\gpu_logs",
+    "ENABLE_NOTION": true,
+    "NOTION_TOKEN": "secret_your_notion_token",
+    "NOTION_DATABASE_ID": "your_notion_database_id",
+    "ENABLE_TELEGRAM": true,
+    "TELEGRAM_BOT_TOKEN": "your_telegram_bot_token",
+    "TELEGRAM_CHAT_ID": "your_telegram_chat_id",
+    "overall_total": 0,
+    "last_reset_date": "2024-08-14T08:08:00.032594"
+}
