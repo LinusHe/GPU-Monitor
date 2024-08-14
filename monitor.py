@@ -65,7 +65,7 @@ def load_config():
     return config
 
 def send_telegram_message(message, retry_count=0):
-    if not CONFIG.get('ENABLE_TELEGRAM', True):
+    if not CONFIG.get('ENABLE_TELEGRAM', False):
         return
     if retry_count >= 3:
         logging.error(f"Failed to send Telegram message after 3 attempts: {message}")
@@ -83,10 +83,11 @@ def send_telegram_message(message, retry_count=0):
 
 def log_error(error_msg):
     logging.error(error_msg)
-    try:
-        send_telegram_message(f"❌ *Error*: {error_msg}")
-    except Exception as e:
-        logging.error(f"Failed to send error message via Telegram: {str(e)}")
+    if CONFIG.get('ENABLE_TELEGRAM', False):
+        try:
+            send_telegram_message(f"❌ *Error*: {error_msg}")
+        except Exception as e:
+            logging.error(f"Failed to send error message via Telegram: {str(e)}")
 
 def get_gpu_usage():
     try:
@@ -176,7 +177,7 @@ def log_gpu_usage(start_time, end_time, duration):
     return filtered_total
 
 def update_notion(start_time, end_time, duration):
-    if not CONFIG.get('ENABLE_NOTION', True):
+    if not CONFIG.get('ENABLE_NOTION', False):
         return
     try:
         url = f"https://api.notion.com/v1/pages"
@@ -205,12 +206,15 @@ def reset_total_time():
     filtered_total = 0
     CONFIG['last_reset_date'] = last_reset_date.isoformat()
     save_config()
-    send_telegram_message(f"🔄 *Gesamtzeit zurückgesetzt*\nNeues Startdatum: {last_reset_date.strftime('%Y-%m-%d')}")
+    if CONFIG.get('ENABLE_TELEGRAM', False):
+        send_telegram_message(f"🔄 *Gesamtzeit zurückgesetzt*\nNeues Startdatum: {last_reset_date.strftime('%Y-%m-%d')}")
 
 
 # Initialize bot and set up message handlers
 def initialize_bot():
     global bot
+    if not CONFIG.get('ENABLE_TELEGRAM', False):
+        return
     bot = telebot.TeleBot(CONFIG['TELEGRAM_BOT_TOKEN'])
 
     @bot.message_handler(commands=['reset'])
@@ -236,7 +240,8 @@ def signal_handler(signum, frame):
     global should_stop, icon
     should_stop = True
     logging.info("Erhaltenes Stoppsignal. Beende die Überwachung...")
-    send_telegram_message("⚠️ *GPU-Überwachung wird beendet*")
+    if CONFIG.get('ENABLE_TELEGRAM', False):
+        send_telegram_message("⚠️ *GPU-Überwachung wird beendet*")
     if icon:
         icon.stop()
 
@@ -370,8 +375,9 @@ def main(autostart=False):
     # Calculate filtered_total after CONFIG is loaded
     filtered_total = calculate_filtered_total()
 
-    # Initialize bot
-    initialize_bot()
+    # Initialize bot only if Telegram is enabled
+    if CONFIG.get('ENABLE_TELEGRAM', False):
+        initialize_bot()
 
     # LOG_DIR als Path-Objekt erstellen
     CONFIG['LOG_DIR'] = Path(CONFIG['LOG_DIR'])
@@ -399,7 +405,8 @@ def main(autostart=False):
             logging.warning("Konnte PID-Datei nicht erstellen. Fahre trotzdem fort.")
 
     logging.info("GPU-Überwachung gestartet")
-    send_telegram_message("🚀 *GPU-Überwachung gestartet*")
+    if CONFIG.get('ENABLE_TELEGRAM', False):
+        send_telegram_message("🚀 *GPU-Überwachung gestartet*")
 
     # Starte das Tray-Icon in einem separaten Thread
     icon_thread = threading.Thread(target=icon.run, args=(setup,))
@@ -410,9 +417,10 @@ def main(autostart=False):
     update_thread.daemon = True  # Setze den Thread als Daemon
     update_thread.start()
 
-    # Starte den Telegram-Bot in einem separaten Thread
-    bot_thread = threading.Thread(target=bot.polling, daemon=True)
-    bot_thread.start()
+    # Starte den Telegram-Bot in einem separaten Thread nur wenn Telegram aktiviert ist
+    if CONFIG.get('ENABLE_TELEGRAM', False):
+        bot_thread = threading.Thread(target=bot.polling, daemon=True)
+        bot_thread.start()
 
     try:
         while not should_stop:
@@ -439,7 +447,8 @@ def main(autostart=False):
             if gpu_usage > CONFIG['GPU_USAGE_THRESHOLD']:
                 if gpu_usage_start is None:
                     gpu_usage_start = current_time
-                    send_telegram_message(f"🔥 *GPU-Nutzung über Schwellenwert*\nAktuell: *{gpu_usage}%*")
+                    if CONFIG.get('ENABLE_TELEGRAM', False):
+                        send_telegram_message(f"🔥 *GPU-Nutzung über Schwellenwert*\nAktuell: *{gpu_usage}%*")
                     logging_active = True
                     icon.icon = create_image(active=True)  # Update icon when logging starts
                 cool_down_start = None
@@ -449,7 +458,8 @@ def main(autostart=False):
                 elif (current_time - cool_down_start).total_seconds() >= CONFIG['COOL_DOWN_PERIOD']:
                     duration = (cool_down_start - gpu_usage_start).total_seconds()
                     log_gpu_usage(gpu_usage_start, cool_down_start, duration)
-                    update_notion(gpu_usage_start, cool_down_start, duration)
+                    if CONFIG.get('ENABLE_NOTION', False):
+                        update_notion(gpu_usage_start, cool_down_start, duration)
                     gpu_usage_start = None
                     cool_down_start = None
                     logging_active = False
@@ -475,7 +485,8 @@ def main(autostart=False):
         icon_thread.join()
         # Wir müssen update_thread nicht mehr explizit beenden, da er ein Daemon-Thread ist
         logging.info("GPU-Überwachung beendet")
-        send_telegram_message("🛑 *GPU-Überwachung wurde beendet*")
+        if CONFIG.get('ENABLE_TELEGRAM', False):
+            send_telegram_message("🛑 *GPU-Überwachung wurde beendet*")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
