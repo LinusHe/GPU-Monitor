@@ -80,7 +80,7 @@ python simGPU.py <target_load> <duration> [--tolerance <tolerance>]
 Note: This requires additional packages. Install them with:
 
 ```
-pip install --user torch
+pip install --user torch pynvml
 ```
 
 ## Optional Features
