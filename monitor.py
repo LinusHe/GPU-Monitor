@@ -17,11 +17,15 @@ from collections import defaultdict
 import signal
 import shutil
 import argparse
+import pystray
+from PIL import Image
+import threading
 
 # Globale Variablen
-overall_total = 0
-daily_totals = defaultdict(float)
-last_reset_date = datetime.now()
+CONFIG = None
+bot = None
+last_reset_date = None
+filtered_total = 0
 should_stop = False
 last_log_time = datetime.now()
 gpu_usage_start = None
@@ -30,9 +34,6 @@ logging_active = False
 
 # Konfiguration speichern
 def save_config():
-    CONFIG['overall_total'] = overall_total
-    CONFIG['daily_totals'] = dict(daily_totals)
-    CONFIG['last_reset_date'] = last_reset_date.isoformat()
     config_path = Path(__file__).parent / 'config.json'
     with open(config_path, 'w') as config_file:
         json.dump(CONFIG, config_file, indent=4, default=str)
@@ -48,36 +49,21 @@ def save_config():
 
 # Konfiguration aus JSON-Datei laden
 def load_config():
+    global last_reset_date, filtered_total
     config_path = Path(__file__).parent / 'config.json'
     with open(config_path, 'r') as config_file:
         config = json.load(config_file)
     
-    global overall_total, daily_totals, last_reset_date
-    overall_total = config.get('overall_total', 0)
-    daily_totals = defaultdict(float, config.get('daily_totals', {}))
-    last_reset_date = datetime.fromisoformat(config.get('last_reset_date', datetime.now().isoformat()))
+    # Handle relative and absolute paths for LOG_DIR
+    log_dir = config.get('LOG_DIR', './gpu_logs')
+    if log_dir.startswith('./'):
+        config['LOG_DIR'] = Path(__file__).parent / log_dir[2:]
+    else:
+        config['LOG_DIR'] = Path(log_dir)
     
+    last_reset_date = datetime.fromisoformat(config.get('last_reset_date', datetime.now().isoformat()))
+    filtered_total = 0  # Initialize filtered_total
     return config
-
-# Konfiguration laden
-CONFIG = load_config()
-
-# LOG_DIR als Path-Objekt erstellen
-CONFIG['LOG_DIR'] = Path(CONFIG['LOG_DIR'])
-
-# Erstellen Sie das Log-Verzeichnis, falls es nicht existiert
-CONFIG['LOG_DIR'].mkdir(parents=True, exist_ok=True)
-
-# Konfigurieren Sie das Logging
-log_file = CONFIG['LOG_DIR'] / 'gpu_monitor.log'
-logging.basicConfig(
-    handlers=[RotatingFileHandler(log_file, maxBytes=100000, backupCount=5)],
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
-
-# Telegram Bot initialisieren
-bot = telebot.TeleBot(CONFIG['TELEGRAM_BOT_TOKEN'])
 
 def send_telegram_message(message, retry_count=0):
     if not CONFIG.get('ENABLE_TELEGRAM', True):
@@ -157,30 +143,65 @@ def log_regular_info(timestamp, gpu_usage, system_info):
     ]
     log_to_csv(log_file, data, headers)
 
+def calculate_daily_total(date):
+    log_file = CONFIG['LOG_DIR'] / f"gpu_usage_log_{date}.csv"
+    if not log_file.exists():
+        return 0
+    
+    total = 0
+    with open(log_file, 'r') as file:
+        csv_reader = csv.DictReader(file)
+        for row in csv_reader:
+            total += float(row['Duration (seconds)'])
+    return total
+
+def calculate_overall_total():
+    total = 0
+    for log_file in CONFIG['LOG_DIR'].glob('gpu_usage_log_*.csv'):
+        with open(log_file, 'r') as file:
+            csv_reader = csv.DictReader(file)
+            for row in csv_reader:
+                total += float(row['Duration (seconds)'])
+    return total
+
+def calculate_filtered_total():
+    total = 0
+    for log_file in CONFIG['LOG_DIR'].glob('gpu_usage_log_*.csv'):
+        log_date = datetime.strptime(log_file.stem.split('_')[-1], "%Y-%m-%d")
+        if log_date >= last_reset_date:
+            with open(log_file, 'r') as file:
+                csv_reader = csv.DictReader(file)
+                for row in csv_reader:
+                    start_time = datetime.fromisoformat(row['Start Time'])
+                    if start_time >= last_reset_date:
+                        total += float(row['Duration (seconds)'])
+    return total
+
 def log_gpu_usage(start_time, end_time, duration):
-    global overall_total, daily_totals
+    global filtered_total
     date_str = start_time.strftime("%Y-%m-%d")
     log_file = CONFIG['LOG_DIR'] / f"gpu_usage_log_{date_str}.csv"
-    headers = ["Start Time", "End Time", "Duration (seconds)", "Daily Total", "Overall Total"]
+    headers = ["Start Time", "End Time", "Duration (seconds)"]
     
-    daily_totals[date_str] += duration
-    overall_total += duration
-    
-    data = [start_time, end_time, duration, daily_totals[date_str], overall_total]
+    data = [start_time, end_time, duration]
     log_to_csv(log_file, data, headers)
+    
+    if start_time >= last_reset_date:
+        filtered_total += duration
+    
+    daily_total = calculate_daily_total(date_str)
     
     message = (
         f"🧊 GPU-Nutzung unter Schwellenwert\n"
         f"Dauer: {duration:.2f}s\n"
-        f"Tägliche Summe: {daily_totals[date_str]:.2f}s\n"
-        f"Gesamtsumme: {overall_total:.2f}s"
+        f"Tägliche Summe: {daily_total:.2f}s\n"
+        f"Gesamtsumme seit Reset: {filtered_total:.2f}s"
     )
     send_telegram_message(message)
     
-    save_config()  # Speichere die aktualisierten Werte
+    save_config()
     
-    return daily_totals[date_str], overall_total
-
+    return daily_total, filtered_total
 
 def update_notion(start_time, end_time, duration):
     if not CONFIG.get('ENABLE_NOTION', True):
@@ -207,36 +228,45 @@ def update_notion(start_time, end_time, duration):
         log_error(f"Fehler beim Aktualisieren von Notion: {str(e)}")
 
 def reset_total_time():
-    global overall_total, last_reset_date
-    overall_total = 0
+    global last_reset_date, filtered_total
     last_reset_date = datetime.now()
-    CONFIG['overall_total'] = overall_total
+    filtered_total = 0
     CONFIG['last_reset_date'] = last_reset_date.isoformat()
     save_config()
     send_telegram_message(f"🔄 *Gesamtzeit zurückgesetzt*\nNeues Startdatum: {last_reset_date.strftime('%Y-%m-%d')}")
 
-@bot.message_handler(commands=['reset'])
-def handle_reset(message):
-    if str(message.chat.id) != CONFIG['TELEGRAM_CHAT_ID']:
-        return
-    reset_total_time()
 
-@bot.message_handler(commands=['status'])
-def handle_status(message):
-    if str(message.chat.id) != CONFIG['TELEGRAM_CHAT_ID']:
-        return
-    status_message = (
-        f"📊 *GPU-Überwachungsstatus*\n"
-        f"Gesamtzeit seit {last_reset_date.strftime('%Y-%m-%d')}: *{overall_total:.2f}s*\n"
-        f"Aktueller Schwellenwert: *{CONFIG['GPU_USAGE_THRESHOLD']}%*"
-    )
-    send_telegram_message(status_message)
+# Initialize bot and set up message handlers
+def initialize_bot():
+    global bot
+    bot = telebot.TeleBot(CONFIG['TELEGRAM_BOT_TOKEN'])
+
+    @bot.message_handler(commands=['reset'])
+    def handle_reset(message):
+        if str(message.chat.id) != CONFIG['TELEGRAM_CHAT_ID']:
+            return
+        reset_total_time()
+
+    @bot.message_handler(commands=['status'])
+    def handle_status(message):
+        if str(message.chat.id) != CONFIG['TELEGRAM_CHAT_ID']:
+            return
+        overall_total = calculate_overall_total()
+        status_message = (
+            f"📊 *GPU-Überwachungsstatus*\n"
+            f"Gesamtzeit seit {last_reset_date.strftime('%Y-%m-%d')}: *{overall_total:.2f}s*\n"
+            f"Aktueller Schwellenwert: *{CONFIG['GPU_USAGE_THRESHOLD']}%*"
+        )
+        send_telegram_message(status_message)
+
 
 def signal_handler(signum, frame):
-    global should_stop
+    global should_stop, icon
     should_stop = True
     logging.info("Erhaltenes Stoppsignal. Beende die Überwachung...")
     send_telegram_message("⚠️ *GPU-Überwachung wird beendet*")
+    if icon:
+        icon.stop()
 
 def check_stop_file():
     if os.path.exists('stop_monitor.txt'):
@@ -253,13 +283,132 @@ def is_script_running():
             return True
     return False
 
+def create_image(active=False):
+    icon_path = Path(__file__).parent / ('tray_icon_active.png' if active else 'tray_icon.png')
+    if icon_path.exists():
+        return Image.open(icon_path)
+    else:
+        # Fallback zu einem einfachen Bild, wenn die Datei nicht existiert
+        return Image.new('RGB', (64, 64), color = (240, 80, 0) if active else (0, 80, 240))
+
+def exit_action(icon):
+    global should_stop
+    should_stop = True
+    icon.stop()
+
+def open_log_folder():
+    log_dir = str(CONFIG['LOG_DIR'])
+    try:
+        if sys.platform == 'win32':
+            os.startfile(log_dir)
+        elif sys.platform == 'darwin':
+            subprocess.Popen(['open', log_dir])
+        else:
+            subprocess.Popen(['xdg-open', log_dir])
+    except Exception as e:
+        log_error(f"Fehler beim Öffnen des Log-Ordners: {str(e)}")
+
+def open_settings():
+    config_path = Path(__file__).parent / 'config.json'
+    try:
+        if sys.platform == 'win32':
+            os.startfile(str(config_path))
+        elif sys.platform == 'darwin':
+            subprocess.Popen(['open', str(config_path)])
+        else:
+            subprocess.Popen(['xdg-open', str(config_path)])
+    except Exception as e:
+        log_error(f"Fehler beim Öffnen der Einstellungen: {str(e)}")
+
+
+def open_dashboard():
+    dashboard_path = Path(__file__).parent / 'dashboard.html'
+    try:
+        if sys.platform == 'win32':
+            os.startfile(str(dashboard_path))
+        elif sys.platform == 'darwin':
+            subprocess.Popen(['open', str(dashboard_path)])
+        else:
+            subprocess.Popen(['xdg-open', str(dashboard_path)])
+    except Exception as e:
+        log_error(f"Fehler beim Öffnen des Dashboards: {str(e)}")
+
+def create_menu():
+    return pystray.Menu(
+        pystray.MenuItem('Dashboard', open_dashboard),
+        pystray.MenuItem('Open Log Folder', open_log_folder),
+        pystray.MenuItem('Settings', open_settings),
+        pystray.MenuItem('Reset', reset_total_time),
+        pystray.MenuItem('Exit', exit_action)
+    )
+
+def setup(icon):
+    icon.visible = True
+
+def format_duration(seconds):
+    if seconds < 60:
+        return f"{seconds:.2f}s"
+    elif seconds < 3600:
+        minutes = seconds / 60
+        return f"{minutes:.2f}min"
+    else:
+        hours = seconds / 3600
+        return f"{hours:.2f}h"
+
+def update_icon_text():
+    global icon, should_stop, filtered_total, logging_active
+    while not should_stop:
+        if icon.visible:
+            gpu_usage = get_gpu_usage()
+            formatted_total = format_duration(filtered_total)
+            icon.title = f"GPU: {gpu_usage}% | Total: {formatted_total}"
+            
+            # Update icon based on GPU usage
+            new_icon = create_image(active=logging_active)
+            icon.icon = new_icon
+        time.sleep(5)
+
+def get_status_message():
+    overall_total = calculate_overall_total()
+    return (
+        f"📊 *GPU-Überwachungsstatus*\n"
+        f"Gesamtzeit seit {last_reset_date.strftime('%Y-%m-%d')}: *{overall_total:.2f}s*\n"
+        f"Aktueller Schwellenwert: *{CONFIG['GPU_USAGE_THRESHOLD']}%*"
+    )
+
+# Erstellen Sie das Icon global
+icon = pystray.Icon("GPU Monitor", create_image(), "GPU Monitor", create_menu())
+
 def main(autostart=False):
-    global should_stop, last_log_time, gpu_usage_start, cool_down_start, logging_active
+    global should_stop, last_log_time, gpu_usage_start, cool_down_start, logging_active, icon, filtered_total, CONFIG, bot
     
     if is_script_running():
         print("Eine Instanz des Skripts läuft bereits. Beende diesen Prozess.")
         logging.info("Versuch, eine zweite Instanz zu starten. Beende den Prozess.")
         sys.exit(0)
+
+    # Load configuration
+    CONFIG = load_config()
+
+    # Initialize bot
+    initialize_bot()
+
+    # Calculate filtered_total after loading config
+    filtered_total = calculate_filtered_total()
+
+    # LOG_DIR als Path-Objekt erstellen
+    CONFIG['LOG_DIR'] = Path(CONFIG['LOG_DIR'])
+
+    # Erstellen Sie das Log-Verzeichnis, falls es nicht existiert
+    CONFIG['LOG_DIR'].mkdir(parents=True, exist_ok=True)
+
+    # Konfigurieren Sie das Logging
+    log_file = CONFIG['LOG_DIR'] / 'gpu_monitor.log'
+    logging.basicConfig(
+        handlers=[RotatingFileHandler(log_file, maxBytes=100000, backupCount=5)],
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s'
+    )
 
     # Fügen Sie hier eine kurze Verzögerung ein
     time.sleep(2)
@@ -275,6 +424,19 @@ def main(autostart=False):
     logging.info("GPU-Überwachung gestartet")
     send_telegram_message("🚀 *GPU-Überwachung gestartet*")
 
+    # Starte das Tray-Icon in einem separaten Thread
+    icon_thread = threading.Thread(target=icon.run, args=(setup,))
+    icon_thread.start()
+
+    # Starte den Thread zur Aktualisierung des Icon-Texts
+    update_thread = threading.Thread(target=update_icon_text)
+    update_thread.daemon = True  # Setze den Thread als Daemon
+    update_thread.start()
+
+    # Starte den Telegram-Bot in einem separaten Thread
+    bot_thread = threading.Thread(target=bot.polling, daemon=True)
+    bot_thread.start()
+
     try:
         while not should_stop:
             if check_stop_file():
@@ -283,10 +445,6 @@ def main(autostart=False):
 
             current_time = datetime.now()
             current_date = current_time.strftime("%Y-%m-%d")
-            
-            # Überprüfe, ob ein neuer Tag begonnen hat
-            if current_date not in daily_totals:
-                daily_totals[current_date] = 0
             
             gpu_usage = get_gpu_usage()
             
@@ -306,6 +464,7 @@ def main(autostart=False):
                     gpu_usage_start = current_time
                     send_telegram_message(f"🔥 *GPU-Nutzung über Schwellenwert*\nAktuell: *{gpu_usage}%*")
                     logging_active = True
+                    icon.icon = create_image(active=True)  # Update icon when logging starts
                 cool_down_start = None
             elif gpu_usage_start is not None:
                 if cool_down_start is None:
@@ -317,9 +476,14 @@ def main(autostart=False):
                     gpu_usage_start = None
                     cool_down_start = None
                     logging_active = False
+                    icon.icon = create_image(active=False)  # Update icon when logging stops
             
             # Speichere die aktuellen Werte regelmäßig
             save_config()
+
+            # Recalculate filtered_total periodically (e.g., every hour)
+            if current_time.minute == 0 and current_time.second == 0:
+                filtered_total = calculate_filtered_total()
 
             time.sleep(CONFIG['CHECK_INTERVAL'])
 
@@ -333,6 +497,10 @@ def main(autostart=False):
         logging.exception(error_msg)
         send_telegram_message(f"❌ *Fehler*: {error_msg}")
     finally:
+        should_stop = True
+        icon.stop()
+        icon_thread.join()
+        # Wir müssen update_thread nicht mehr explizit beenden, da er ein Daemon-Thread ist
         logging.info("GPU-Überwachung beendet")
         send_telegram_message("🛑 *GPU-Überwachung wurde beendet*")
 
@@ -344,21 +512,17 @@ if __name__ == "__main__":
     # Registrieren Sie die Signalhandler
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
-
-    # Starte den Telegram-Bot in einem separaten Thread
-    import threading
-    bot_thread = threading.Thread(target=bot.polling, daemon=True)
-    bot_thread.start()
     
     try:
         main(args.autostart)
     except Exception as e:
         logging.exception("Kritischer Fehler: Bot konnte nicht gestartet werden")
-        send_telegram_message(f"❌ *Kritischer Fehler*: Bot konnte nicht gestartet werden\nGrund: {str(e)}")
+        if bot:
+            send_telegram_message(f"❌ *Kritischer Fehler*: Bot konnte nicht gestartet werden\nGrund: {str(e)}")
     finally:
         # Beende den Bot-Thread sauber
-        bot.stop_polling()
-        bot_thread.join()
+        if bot:
+            bot.stop_polling()
         # Entferne die PID-Datei, nur wenn sie existiert und wir nicht im Autostart-Modus sind
         if not args.autostart:
             try:
