@@ -16,6 +16,7 @@ import traceback
 from collections import defaultdict
 import signal
 import shutil
+import argparse
 
 # Globale Variablen
 overall_total = 0
@@ -43,7 +44,7 @@ def save_config():
     }
     settings_path = CONFIG['LOG_DIR'] / 'settings.json'
     with open(settings_path, 'w') as settings_file:
-        json.dump(settings, settings_file, indent=4, default=str)
+        json.dump(settings, settings_file, indent=4)
 
 # Konfiguration aus JSON-Datei laden
 def load_config():
@@ -243,9 +244,34 @@ def check_stop_file():
         return True
     return False
 
-def main():
+def is_script_running():
+    current_process = psutil.Process()
+    for process in psutil.process_iter(['name', 'cmdline']):
+        if process.info['name'] == current_process.name() and \
+           process.pid != current_process.pid and \
+           'monitor.py' in ' '.join(process.info['cmdline']):
+            return True
+    return False
+
+def main(autostart=False):
     global should_stop, last_log_time, gpu_usage_start, cool_down_start, logging_active
     
+    if is_script_running():
+        print("Eine Instanz des Skripts läuft bereits. Beende diesen Prozess.")
+        logging.info("Versuch, eine zweite Instanz zu starten. Beende den Prozess.")
+        sys.exit(0)
+
+    # Fügen Sie hier eine kurze Verzögerung ein
+    time.sleep(2)
+
+    # Schreiben Sie die PID in eine Datei, nur wenn nicht im Autostart-Modus
+    if not autostart:
+        try:
+            with open('gpu_monitor.pid', 'w') as f:
+                f.write(str(os.getpid()))
+        except PermissionError:
+            logging.warning("Konnte PID-Datei nicht erstellen. Fahre trotzdem fort.")
+
     logging.info("GPU-Überwachung gestartet")
     send_telegram_message("🚀 *GPU-Überwachung gestartet*")
 
@@ -311,13 +337,13 @@ def main():
         send_telegram_message("🛑 *GPU-Überwachung wurde beendet*")
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--autostart', action='store_true', help='Startet im Autostart-Modus ohne PID-Datei zu erstellen')
+    args = parser.parse_args()
+
     # Registrieren Sie die Signalhandler
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
-
-    # Schreiben Sie die PID in eine Datei
-    with open('gpu_monitor.pid', 'w') as f:
-        f.write(str(os.getpid()))
 
     # Starte den Telegram-Bot in einem separaten Thread
     import threading
@@ -325,7 +351,7 @@ if __name__ == "__main__":
     bot_thread.start()
     
     try:
-        main()
+        main(args.autostart)
     except Exception as e:
         logging.exception("Kritischer Fehler: Bot konnte nicht gestartet werden")
         send_telegram_message(f"❌ *Kritischer Fehler*: Bot konnte nicht gestartet werden\nGrund: {str(e)}")
@@ -333,8 +359,9 @@ if __name__ == "__main__":
         # Beende den Bot-Thread sauber
         bot.stop_polling()
         bot_thread.join()
-        # Entferne die PID-Datei
-        try:
-            os.remove('gpu_monitor.pid')
-        except FileNotFoundError:
-            pass
+        # Entferne die PID-Datei, nur wenn sie existiert und wir nicht im Autostart-Modus sind
+        if not args.autostart:
+            try:
+                os.remove('gpu_monitor.pid')
+            except FileNotFoundError:
+                pass

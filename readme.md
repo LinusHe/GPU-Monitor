@@ -20,9 +20,12 @@ It is based on NVIDIA's `nvidia-smi` command, which is a command-line utility to
 
 5. Test the script by double-clicking the `start.bat` file. To stop, use the `stop.bat` file.
 
-6. If everything works correctly, you can add `start.bat` to your Windows startup folder, to start the script automatically at startup (only for the current user):
-   - Press `Win + R`, type `shell:startup`, and press Enter
-   - Create a shortcut to `start.bat` in this folder
+6. If you want the script to start automatically at system startup:
+   - Edit the `autostartMonitoring.bat` file and adjust the path to your `monitor.py` file.
+   - Press `Win + R`, type `shell:startup`, and press Enter.
+   - Copy the edited `autostartMonitoring.bat` file to this startup folder.
+
+   Note: Autostart may not work reliably on all systems. For the most consistent results, it's recommended to manually start the script after system boot.
 
 ## Configuration
 
