@@ -28,22 +28,19 @@ It is based on NVIDIA's `nvidia-smi` command, which is a command-line utility to
 
 Edit `config.json` to customize the script's behavior:
 
-```json
-# Start of Selection
-{
-    "GPU_USAGE_THRESHOLD": 30,  // The threshold for GPU usage percentage to trigger notifications
-    "CHECK_INTERVAL": 5,         // Time in seconds between each check of GPU usage
-    "COOL_DOWN_PERIOD": 10,      // Time in seconds to wait after GPU usage drops below the threshold before stop measuring the GPU usage
-    "LOG_INTERVAL": 600,         // Time in seconds between logging system information (not only GPU usage)
-    "LOG_DIR": "C:\\Users\\your_username\\OneDrive\\Desktop\\gpu_logs",           // Directory where log files will be stored
-    "ENABLE_TELEGRAM": true,     // Flag to enable or disable Telegram notifications
-    "TELEGRAM_BOT_TOKEN": "your_bot_token_here", // Token for the Telegram bot
-    "TELEGRAM_CHAT_ID": "your_chat_id_here",     // Chat ID for sending messages via Telegram
-    "ENABLE_NOTION": false,      // Flag to enable or disable logging to Notion
-    "NOTION_TOKEN": "your_notion_token_here",    // API token for Notion integration
-    "NOTION_DATABASE_ID": "your_database_id_here" // Database ID for the Notion database to log data
-}
-```
+| Key                     | Default Value                               | Description                                                                                     |
+|-------------------------|---------------------------------------------|-------------------------------------------------------------------------------------------------|
+| `GPU_USAGE_THRESHOLD`   | 30                                          | The threshold for GPU usage percentage to trigger notifications                                 |
+| `CHECK_INTERVAL`        | 5                                           | Time in seconds between each check of GPU usage                                               |
+| `COOL_DOWN_PERIOD`      | 10                                          | Time in seconds to wait after GPU usage drops below the threshold before stop measuring usage  |
+| `LOG_INTERVAL`          | 600                                         | Time in seconds between logging system information (not only GPU usage)                        |
+| `LOG_DIR`               | "C:\\Users\\your_username\\OneDrive\\Desktop\\gpu_logs" | Directory where log files will be stored                                                        |
+| `ENABLE_TELEGRAM`       | false                                       | Flag to enable or disable Telegram notifications                                                |
+| `TELEGRAM_BOT_TOKEN`    | "your_bot_token_here"                      | Token for the Telegram bot                                                                      |
+| `TELEGRAM_CHAT_ID`      | "your_chat_id_here"                        | Chat ID for sending messages via Telegram                                                      |
+| `ENABLE_NOTION`         | false                                      | Flag to enable or disable logging to Notion                                                    |
+| `NOTION_TOKEN`          | "your_notion_token_here"                   | API token for Notion integration                                                                 |
+| `NOTION_DATABASE_ID`    | "your_database_id_here"                    | Database ID for the Notion database to log data                                                |
 
 ## Testing with simGPU.py
 
