@@ -49,7 +49,7 @@ def save_config():
 
 # Konfiguration aus JSON-Datei laden
 def load_config():
-    global last_reset_date, filtered_total
+    global last_reset_date
     config_path = Path(__file__).parent / 'config.json'
     with open(config_path, 'r') as config_file:
         config = json.load(config_file)
@@ -62,7 +62,6 @@ def load_config():
         config['LOG_DIR'] = Path(log_dir)
     
     last_reset_date = datetime.fromisoformat(config.get('last_reset_date', datetime.now().isoformat()))
-    filtered_total = 0  # Initialize filtered_total
     return config
 
 def send_telegram_message(message, retry_count=0):
@@ -143,38 +142,15 @@ def log_regular_info(timestamp, gpu_usage, system_info):
     ]
     log_to_csv(log_file, data, headers)
 
-def calculate_daily_total(date):
-    log_file = CONFIG['LOG_DIR'] / f"gpu_usage_log_{date}.csv"
-    if not log_file.exists():
-        return 0
-    
-    total = 0
-    with open(log_file, 'r') as file:
-        csv_reader = csv.DictReader(file)
-        for row in csv_reader:
-            total += float(row['Duration (seconds)'])
-    return total
-
-def calculate_overall_total():
+def calculate_filtered_total():
     total = 0
     for log_file in CONFIG['LOG_DIR'].glob('gpu_usage_log_*.csv'):
         with open(log_file, 'r') as file:
             csv_reader = csv.DictReader(file)
             for row in csv_reader:
-                total += float(row['Duration (seconds)'])
-    return total
-
-def calculate_filtered_total():
-    total = 0
-    for log_file in CONFIG['LOG_DIR'].glob('gpu_usage_log_*.csv'):
-        log_date = datetime.strptime(log_file.stem.split('_')[-1], "%Y-%m-%d")
-        if log_date >= last_reset_date:
-            with open(log_file, 'r') as file:
-                csv_reader = csv.DictReader(file)
-                for row in csv_reader:
-                    start_time = datetime.fromisoformat(row['Start Time'])
-                    if start_time >= last_reset_date:
-                        total += float(row['Duration (seconds)'])
+                start_time = datetime.fromisoformat(row['Start Time'])
+                if start_time >= last_reset_date:
+                    total += float(row['Duration (seconds)'])
     return total
 
 def log_gpu_usage(start_time, end_time, duration):
@@ -186,22 +162,18 @@ def log_gpu_usage(start_time, end_time, duration):
     data = [start_time, end_time, duration]
     log_to_csv(log_file, data, headers)
     
-    if start_time >= last_reset_date:
-        filtered_total += duration
-    
-    daily_total = calculate_daily_total(date_str)
+    filtered_total = calculate_filtered_total()  # Recalculate total after logging
     
     message = (
         f"🧊 GPU-Nutzung unter Schwellenwert\n"
         f"Dauer: {duration:.2f}s\n"
-        f"Tägliche Summe: {daily_total:.2f}s\n"
         f"Gesamtsumme seit Reset: {filtered_total:.2f}s"
     )
     send_telegram_message(message)
     
     save_config()
     
-    return daily_total, filtered_total
+    return filtered_total
 
 def update_notion(start_time, end_time, duration):
     if not CONFIG.get('ENABLE_NOTION', True):
@@ -251,7 +223,7 @@ def initialize_bot():
     def handle_status(message):
         if str(message.chat.id) != CONFIG['TELEGRAM_CHAT_ID']:
             return
-        overall_total = calculate_overall_total()
+        overall_total = calculate_filtered_total()
         status_message = (
             f"📊 *GPU-Überwachungsstatus*\n"
             f"Gesamtzeit seit {last_reset_date.strftime('%Y-%m-%d')}: *{overall_total:.2f}s*\n"
@@ -360,6 +332,7 @@ def update_icon_text():
     while not should_stop:
         if icon.visible:
             gpu_usage = get_gpu_usage()
+            filtered_total = calculate_filtered_total()  # Recalculate total before updating icon
             formatted_total = format_duration(filtered_total)
             icon.title = f"GPU: {gpu_usage}% | Total: {formatted_total}"
             
@@ -369,7 +342,7 @@ def update_icon_text():
         time.sleep(5)
 
 def get_status_message():
-    overall_total = calculate_overall_total()
+    overall_total = calculate_filtered_total()
     return (
         f"📊 *GPU-Überwachungsstatus*\n"
         f"Gesamtzeit seit {last_reset_date.strftime('%Y-%m-%d')}: *{overall_total:.2f}s*\n"
@@ -390,11 +363,11 @@ def main(autostart=False):
     # Load configuration
     CONFIG = load_config()
 
+    # Calculate filtered_total after CONFIG is loaded
+    filtered_total = calculate_filtered_total()
+
     # Initialize bot
     initialize_bot()
-
-    # Calculate filtered_total after loading config
-    filtered_total = calculate_filtered_total()
 
     # LOG_DIR als Path-Objekt erstellen
     CONFIG['LOG_DIR'] = Path(CONFIG['LOG_DIR'])
@@ -480,10 +453,6 @@ def main(autostart=False):
             
             # Speichere die aktuellen Werte regelmäßig
             save_config()
-
-            # Recalculate filtered_total periodically (e.g., every hour)
-            if current_time.minute == 0 and current_time.second == 0:
-                filtered_total = calculate_filtered_total()
 
             time.sleep(CONFIG['CHECK_INTERVAL'])
 
