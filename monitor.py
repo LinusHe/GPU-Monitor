@@ -249,10 +249,14 @@ def check_stop_file():
 def is_script_running():
     current_process = psutil.Process()
     for process in psutil.process_iter(['name', 'cmdline']):
-        if process.info['name'] == current_process.name() and \
-           process.pid != current_process.pid and \
-           'monitor.py' in ' '.join(process.info['cmdline']):
-            return True
+        try:
+            if process.info['name'] == current_process.name() and \
+               process.pid != current_process.pid and \
+               process.info['cmdline'] and \
+               'monitor.py' in ' '.join(process.info['cmdline']):
+                return True
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            pass
     return False
 
 def create_image(active=False):
