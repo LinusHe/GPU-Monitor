@@ -1,5 +1,5 @@
 psutil==5.9.6
 pyTelegramBotAPI==4.22.0
 requests==2.31.0
-pstray
+pystray
 pillow
